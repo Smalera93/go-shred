@@ -1,1 +1,5 @@
+# Temporary practice files
 practice-*.txt
+
+# Compiled executable
+/go-shred
