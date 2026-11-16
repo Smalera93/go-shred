@@ -62,32 +62,61 @@ func main() {
 
 	fmt.Printf("Random bytes %v\n", data)
 
-	_, err = file.Seek(0, io.SeekStart)
-	if err != nil {
-		fmt.Println("Failed to seek:", err)
-		return
-	}
-
 	data2 := make([]byte, 8)
-	remaining := fileSize
 
-	for remaining > 0 {
+	for pass := 1; pass <= 3; pass++ {
+		fmt.Printf("Starting pass %d\n", pass)
 
-		_, err = rand.Read(data2)
+		passWritten := int64(0)
+
+		_, err = file.Seek(0, io.SeekStart)
 		if err != nil {
-			fmt.Println("Failed to generate random bytes:", err)
+			fmt.Println("Failed to seek:", err)
 			return
 		}
 
-		if remaining < int64(len(data2)) {
-			data2 = data2[:int(remaining)]
-		}
+		remaining := fileSize
 
-		bytesWritten, err = file.Write(data2)
+		for remaining > 0 {
+
+			_, err = rand.Read(data2)
+			if err != nil {
+				fmt.Println("Failed to generate random bytes:", err)
+				return
+			}
+
+			chunk := data2
+
+			if remaining < int64(len(chunk)) {
+				chunk = chunk[:int(remaining)]
+			}
+
+			bytesWritten, err = file.Write(chunk)
+			if err != nil {
+				fmt.Println("Failed to overwrite:", err)
+				return
+			}
+
+			if bytesWritten != len(chunk) {
+				fmt.Println("Incomplete write")
+				return
+			}
+
+			passWritten += int64(bytesWritten)
+			remaining -= int64(bytesWritten)
+
+		}
+		err = file.Sync()
 		if err != nil {
-			fmt.Println("Failed to overwrite:", err)
+			fmt.Println("Failed to synchronise file:", err)
 			return
 		}
-		remaining -= int64(bytesWritten)
+
+		if passWritten != fileSize {
+			fmt.Printf("Incomplete pass: wrote %d of %d bytes\n", passWritten, fileSize)
+			return
+		}
+
+		fmt.Printf("Completed pass %d: %d bytes overwritten\n", pass, passWritten)
 	}
 }
