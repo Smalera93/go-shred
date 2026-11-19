@@ -7,6 +7,11 @@ import (
 	"os"
 )
 
+type overwriteTarget interface {
+	io.WriteSeeker
+	Sync() error
+}
+
 func Shred(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -30,15 +35,36 @@ func Shred(path string) error {
 		}
 	}()
 
-	data := make([]byte, 32*1034)
 	fileSize := info.Size()
+
+	if err := overwriteFile(file, fileSize, rand.Reader); err != nil {
+		return fmt.Errorf("failed to overwrite file: %w", err)
+	}
+
+	closeErr := file.Close()
+	needsClose = false
+
+	if closeErr != nil {
+		return fmt.Errorf("failed to close file: %w", closeErr)
+	}
+
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove file: %w", closeErr)
+	}
+
+	return nil
+}
+
+func overwriteFile(file overwriteTarget, fileSize int64, random io.Reader) error {
+
+	data := make([]byte, 32*1024)
 
 	for pass := 1; pass <= 3; pass++ {
 		fmt.Printf("Starting pass %d\n", pass)
 
 		passWritten := int64(0)
 
-		_, err = file.Seek(0, io.SeekStart)
+		_, err := file.Seek(0, io.SeekStart)
 		if err != nil {
 			return fmt.Errorf("failed to seek: %w", err)
 		}
@@ -46,16 +72,15 @@ func Shred(path string) error {
 		remaining := fileSize
 
 		for remaining > 0 {
-
-			_, err = rand.Read(data)
-			if err != nil {
-				return fmt.Errorf("failed to generate random bytes: %w", err)
-			}
-
 			chunk := data
 
 			if remaining < int64(len(chunk)) {
 				chunk = chunk[:int(remaining)]
+			}
+
+			_, err := io.ReadFull(random, chunk)
+			if err != nil {
+				return fmt.Errorf("failed to generate random bytes: %w", err)
 			}
 
 			bytesWritten, err := file.Write(chunk)
@@ -81,17 +106,6 @@ func Shred(path string) error {
 		}
 
 		fmt.Printf("completed pass %d: %d bytes overwritten\n", pass, passWritten)
-	}
-
-	closeErr := file.Close()
-	needsClose = false
-
-	if closeErr != nil {
-		return fmt.Errorf("failed to close file: %w", closeErr)
-	}
-
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("failed to remove file: %w", closeErr)
 	}
 
 	return nil
