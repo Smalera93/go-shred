@@ -35,7 +35,12 @@ func Shred(path string) error {
 		}
 	}()
 
-	fileSize := info.Size()
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to inspect opened file: %w", err)
+	}
+
+	fileSize := fileInfo.Size()
 
 	if err := overwriteFile(file, fileSize, rand.Reader); err != nil {
 		return fmt.Errorf("failed to overwrite file: %w", err)
@@ -49,7 +54,7 @@ func Shred(path string) error {
 	}
 
 	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("failed to remove file: %w", closeErr)
+		return fmt.Errorf("failed to remove file: %w", err)
 	}
 
 	return nil
