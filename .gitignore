@@ -3,3 +3,4 @@ practice-*.txt
 
 # Compiled executable
 /go-shred
+/coverage.out
