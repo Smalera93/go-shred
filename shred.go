@@ -7,11 +7,14 @@ import (
 	"os"
 )
 
+// overwriteTarget defines the file operations required by overwriteFile
 type overwriteTarget interface {
 	io.WriteSeeker
 	Sync() error
 }
 
+// Shred overwrites a regular file three times with random data,
+// synchronises each pass and removes the file after successful completion.
 func Shred(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -40,6 +43,14 @@ func Shred(path string) error {
 		return fmt.Errorf("failed to inspect opened file: %w", err)
 	}
 
+	if !fileInfo.Mode().IsRegular() {
+		return fmt.Errorf("opened file is not a regular file")
+	}
+
+	if !os.SameFile(info, fileInfo) {
+		return fmt.Errorf("file changed between inspection and opening")
+	}
+
 	fileSize := fileInfo.Size()
 
 	if err := overwriteFile(file, fileSize, rand.Reader); err != nil {
@@ -53,6 +64,15 @@ func Shred(path string) error {
 		return fmt.Errorf("failed to close file: %w", closeErr)
 	}
 
+	currentInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("failed to inspect file before removal: %w", err)
+	}
+
+	if !os.SameFile(fileInfo, currentInfo) {
+		return fmt.Errorf("file changed before removal")
+	}
+
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("failed to remove file: %w", err)
 	}
@@ -60,12 +80,13 @@ func Shred(path string) error {
 	return nil
 }
 
+// overwriteFile performs three overwrite passes using the supplied
+// data source and a fixed-size buffer to limit memory usage.
 func overwriteFile(file overwriteTarget, fileSize int64, random io.Reader) error {
 
 	data := make([]byte, 32*1024)
 
 	for pass := 1; pass <= 3; pass++ {
-		fmt.Printf("Starting pass %d\n", pass)
 
 		passWritten := int64(0)
 
@@ -109,8 +130,6 @@ func overwriteFile(file overwriteTarget, fileSize int64, random io.Reader) error
 		if passWritten != fileSize {
 			return fmt.Errorf("incomplete pass: wrote %d of %d bytes", passWritten, fileSize)
 		}
-
-		fmt.Printf("completed pass %d: %d bytes overwritten\n", pass, passWritten)
 	}
 
 	return nil
