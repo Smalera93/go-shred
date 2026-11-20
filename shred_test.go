@@ -11,44 +11,82 @@ import (
 	"testing"
 )
 
-func TestShredDeletesFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "example.txt")
+func createTestFile(t *testing.T, data []byte) string {
+	t.Helper()
 
-	err := os.WriteFile(path, []byte("Testing Go Shred"), 0600)
+	path := filepath.Join(t.TempDir(), "overwrite.bin")
+
+	err := os.WriteFile(path, data, 0600)
 	if err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	err = Shred(path)
+	return path
+}
+
+func openTestFile(t *testing.T, data []byte) (string, *os.File) {
+	t.Helper()
+
+	path := createTestFile(t, data)
+
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
-		t.Fatalf("Shred returned an unexpected error: %v", err)
+		t.Fatalf("failed to open test file: %v", err)
 	}
 
-	_, err = os.Stat(path)
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("failed to close test file: %v", err)
+		}
+	})
 
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected file to be deleted, Stat returned: %v", err)
+	return path, file
+}
+
+func assertFileContents(t *testing.T, path string, expected []byte) {
+	t.Helper()
+
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read test file: %v", err)
+	}
+
+	if !bytes.Equal(actual, expected) {
+		t.Fatalf("expected file contents %q, got %q",
+			expected, actual)
 	}
 }
 
-func TestShredEmptyFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "example.txt")
+func assertFileDeleted(t *testing.T, path string) {
+	t.Helper()
 
-	err := os.WriteFile(path, []byte{}, 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file: %v", err)
+	_, err := os.Lstat(path)
+
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected file to be deleted, Lstat returned: %v", err)
 	}
+}
 
-	err = Shred(path)
+func TestShredDeletesFile(t *testing.T) {
+	path := createTestFile(t, []byte("Testing Go Shred"))
+
+	err := Shred(path)
 	if err != nil {
 		t.Fatalf("Shred returned an unexpected error: %v", err)
 	}
 
-	_, err = os.Stat(path)
+	assertFileDeleted(t, path)
+}
 
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected file to be deleted, Stat returned: %v", err)
+func TestShredEmptyFile(t *testing.T) {
+	path := createTestFile(t, []byte{})
+
+	err := Shred(path)
+	if err != nil {
+		t.Fatalf("Shred returned an unexpected error: %v", err)
 	}
+
+	assertFileDeleted(t, path)
 }
 
 func TestShredMissingFile(t *testing.T) {
@@ -57,7 +95,7 @@ func TestShredMissingFile(t *testing.T) {
 	err := Shred(path)
 
 	if err == nil {
-		t.Fatalf("expected an error for a missing file, but got nil")
+		t.Fatal("expected an error for a missing file, but got nil")
 	}
 
 	if !errors.Is(err, os.ErrNotExist) {
@@ -66,8 +104,6 @@ func TestShredMissingFile(t *testing.T) {
 }
 
 func TestShredLargeFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "large.bin")
-
 	size := 100*1024 + 7
 	data := make([]byte, size)
 	_, err := rand.Read(data)
@@ -75,21 +111,14 @@ func TestShredLargeFile(t *testing.T) {
 		t.Fatalf("failed to generate random data: %v", err)
 	}
 
-	err = os.WriteFile(path, data, 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
+	path := createTestFile(t, data)
 
 	err = Shred(path)
 	if err != nil {
 		t.Fatalf("Shred returned an unexpected error: %v", err)
 	}
 
-	_, err = os.Stat(path)
-
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected file to be deleted, Stat returned: %v", err)
-	}
+	assertFileDeleted(t, path)
 }
 
 func TestShredDirectory(t *testing.T) {
@@ -111,7 +140,7 @@ func TestShredDirectory(t *testing.T) {
 	}
 
 	if !info.IsDir() {
-		t.Fatalf("expected path to remain a directory")
+		t.Fatal("expected path to remain a directory")
 	}
 }
 
@@ -130,7 +159,7 @@ func TestShredSymbolicLink(t *testing.T) {
 
 	err = os.Symlink(originalPath, linkPath)
 	if err != nil {
-		t.Fatalf("failed to create symbolic link %v", err)
+		t.Fatalf("failed to create symbolic link: %v", err)
 	}
 
 	err = Shred(linkPath)
@@ -138,14 +167,7 @@ func TestShredSymbolicLink(t *testing.T) {
 		t.Fatal("expected an error when shredding a symbolic link")
 	}
 
-	actualData, err := os.ReadFile(originalPath)
-	if err != nil {
-		t.Fatalf("failed to read original file: %v", err)
-	}
-
-	if !bytes.Equal(originalData, actualData) {
-		t.Fatalf("file contents changed: expected %q, got %q", originalData, actualData)
-	}
+	assertFileContents(t, originalPath, originalData)
 
 	info, err := os.Lstat(linkPath)
 	if err != nil {
@@ -222,19 +244,7 @@ func (f *recordingFile) Sync() error {
 }
 
 func TestOverwriteThreePasses(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "overwrite.bin")
-
-	err := os.WriteFile(path, []byte("ABCD"), 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file %v", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("failed to open test file: %v", err)
-	}
-
-	defer file.Close()
+	_, file := openTestFile(t, []byte("ABCD"))
 
 	recorded := &recordingFile{
 		File: file,
@@ -242,7 +252,7 @@ func TestOverwriteThreePasses(t *testing.T) {
 
 	random := bytes.NewReader([]byte("1234567890XY"))
 
-	err = overwriteFile(recorded, 4, random)
+	err := overwriteFile(recorded, 4, random)
 	if err != nil {
 		t.Fatalf("overwrite failed: %v", err)
 	}
@@ -272,7 +282,7 @@ func TestOverwriteThreePasses(t *testing.T) {
 		}
 
 		if recorded.seekPositions[i] != 0 {
-			t.Fatalf("pass %d: expected seek positions 0, got %d",
+			t.Fatalf("pass %d: expected seek position 0, got %d",
 				i+1, recorded.seekPositions[i])
 		}
 
@@ -287,19 +297,7 @@ func TestOverwriteThreePasses(t *testing.T) {
 }
 
 func TestOverwriteRandomFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "overwrite.bin")
-
-	err := os.WriteFile(path, []byte("ABCD"), 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file %v", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("failed to open test file: %v", err)
-	}
-
-	defer file.Close()
+	path, file := openTestFile(t, []byte("ABCD"))
 
 	recorded := &recordingFile{
 		File: file,
@@ -307,7 +305,7 @@ func TestOverwriteRandomFailure(t *testing.T) {
 
 	random := bytes.NewReader([]byte("123456"))
 
-	err = overwriteFile(recorded, 4, random)
+	err := overwriteFile(recorded, 4, random)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("expected unexpected EOF error, got: %v", err)
 	}
@@ -352,31 +350,11 @@ func TestOverwriteRandomFailure(t *testing.T) {
 		t.Fatalf("expected all random bytes to be consumed, got %d remaining", random.Len())
 	}
 
-	actualData, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read test file: %v", err)
-	}
-
-	if !bytes.Equal(actualData, expectedData) {
-		t.Fatalf("expected file contents %q, got %q",
-			expectedData, actualData)
-	}
+	assertFileContents(t, path, expectedData)
 }
 
 func TestOverwriteSeekFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "overwrite.bin")
-
-	err := os.WriteFile(path, []byte("ABCD"), 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file %v", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("failed to open test file: %v", err)
-	}
-
-	defer file.Close()
+	path, file := openTestFile(t, []byte("ABCD"))
 
 	expectedErr := errors.New("simulated seek failure")
 
@@ -387,7 +365,7 @@ func TestOverwriteSeekFailure(t *testing.T) {
 
 	random := bytes.NewReader([]byte("1234567890XY"))
 
-	err = overwriteFile(recorded, 4, random)
+	err := overwriteFile(recorded, 4, random)
 
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected seek failure, got: %v", err)
@@ -398,11 +376,11 @@ func TestOverwriteSeekFailure(t *testing.T) {
 	}
 
 	if len(recorded.snapshots) != 0 {
-		t.Fatalf("expected 0 snapshot, got %d", len(recorded.snapshots))
+		t.Fatalf("expected 0 snapshots, got %d", len(recorded.snapshots))
 	}
 
 	if len(recorded.passSizes) != 0 {
-		t.Fatalf("expected 0 pass, got %d", len(recorded.passSizes))
+		t.Fatalf("expected 0 completed passes, got %d", len(recorded.passSizes))
 	}
 
 	if recorded.written != 0 {
@@ -413,33 +391,11 @@ func TestOverwriteSeekFailure(t *testing.T) {
 		t.Fatalf("expected 12 unread bytes, got %d", random.Len())
 	}
 
-	expectedData := []byte("ABCD")
-
-	actualData, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read test file: %v", err)
-	}
-
-	if !bytes.Equal(actualData, expectedData) {
-		t.Fatalf("expected file contents %q, got %q",
-			expectedData, actualData)
-	}
+	assertFileContents(t, path, []byte("ABCD"))
 }
 
 func TestOverwriteWriteFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "overwrite.bin")
-
-	err := os.WriteFile(path, []byte("ABCD"), 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file %v", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("failed to open test file: %v", err)
-	}
-
-	defer file.Close()
+	path, file := openTestFile(t, []byte("ABCD"))
 
 	expectedErr := errors.New("simulated write failure")
 
@@ -450,7 +406,7 @@ func TestOverwriteWriteFailure(t *testing.T) {
 
 	random := bytes.NewReader([]byte("1234567890XY"))
 
-	err = overwriteFile(recorded, 4, random)
+	err := overwriteFile(recorded, 4, random)
 
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected write failure, got: %v", err)
@@ -461,11 +417,11 @@ func TestOverwriteWriteFailure(t *testing.T) {
 	}
 
 	if len(recorded.snapshots) != 0 {
-		t.Fatalf("expected 0 snapshot, got %d", len(recorded.snapshots))
+		t.Fatalf("expected 0 snapshots, got %d", len(recorded.snapshots))
 	}
 
 	if len(recorded.passSizes) != 0 {
-		t.Fatalf("expected 0 pass, got %d", len(recorded.passSizes))
+		t.Fatalf("expected 0 completed passes, got %d", len(recorded.passSizes))
 	}
 
 	if recorded.written != 0 {
@@ -476,33 +432,11 @@ func TestOverwriteWriteFailure(t *testing.T) {
 		t.Fatalf("expected 8 unread bytes, got %d", random.Len())
 	}
 
-	expectedData := []byte("ABCD")
-
-	actualData, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read test file: %v", err)
-	}
-
-	if !bytes.Equal(actualData, expectedData) {
-		t.Fatalf("expected file contents %q, got %q",
-			expectedData, actualData)
-	}
+	assertFileContents(t, path, []byte("ABCD"))
 }
 
 func TestOverwriteShortWrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "overwrite.bin")
-
-	err := os.WriteFile(path, []byte("ABCD"), 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file %v", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("failed to open test file: %v", err)
-	}
-
-	defer file.Close()
+	path, file := openTestFile(t, []byte("ABCD"))
 
 	recorded := &recordingFile{
 		File:       file,
@@ -511,10 +445,10 @@ func TestOverwriteShortWrite(t *testing.T) {
 
 	random := bytes.NewReader([]byte("1234567890XY"))
 
-	err = overwriteFile(recorded, 4, random)
+	err := overwriteFile(recorded, 4, random)
 
 	if err == nil {
-		t.Fatalf("expected an incomplete write error")
+		t.Fatal("expected an incomplete write error")
 	}
 
 	if !strings.Contains(err.Error(), "incomplete write") {
@@ -526,11 +460,11 @@ func TestOverwriteShortWrite(t *testing.T) {
 	}
 
 	if len(recorded.snapshots) != 0 {
-		t.Fatalf("expected 0 snapshot, got %d", len(recorded.snapshots))
+		t.Fatalf("expected 0 snapshots, got %d", len(recorded.snapshots))
 	}
 
 	if len(recorded.passSizes) != 0 {
-		t.Fatalf("expected 0 pass, got %d", len(recorded.passSizes))
+		t.Fatalf("expected 0 completed passes, got %d", len(recorded.passSizes))
 	}
 
 	if recorded.written != 2 {
@@ -541,33 +475,11 @@ func TestOverwriteShortWrite(t *testing.T) {
 		t.Fatalf("expected 8 unread bytes, got %d", random.Len())
 	}
 
-	expectedData := []byte("12CD")
-
-	actualData, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read test file: %v", err)
-	}
-
-	if !bytes.Equal(actualData, expectedData) {
-		t.Fatalf("expected file contents %q, got %q",
-			expectedData, actualData)
-	}
+	assertFileContents(t, path, []byte("12CD"))
 }
 
 func TestOverwriteSyncFailure(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "overwrite.bin")
-
-	err := os.WriteFile(path, []byte("ABCD"), 0600)
-	if err != nil {
-		t.Fatalf("failed to create test file %v", err)
-	}
-
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatalf("failed to open test file: %v", err)
-	}
-
-	defer file.Close()
+	path, file := openTestFile(t, []byte("ABCD"))
 
 	expectedErr := errors.New("simulated sync failure")
 
@@ -578,7 +490,7 @@ func TestOverwriteSyncFailure(t *testing.T) {
 
 	random := bytes.NewReader([]byte("1234567890XY"))
 
-	err = overwriteFile(recorded, 4, random)
+	err := overwriteFile(recorded, 4, random)
 
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected sync failure, got: %v", err)
@@ -589,11 +501,11 @@ func TestOverwriteSyncFailure(t *testing.T) {
 	}
 
 	if len(recorded.snapshots) != 0 {
-		t.Fatalf("expected 0 snapshot, got %d", len(recorded.snapshots))
+		t.Fatalf("expected 0 snapshots, got %d", len(recorded.snapshots))
 	}
 
 	if len(recorded.passSizes) != 0 {
-		t.Fatalf("expected 0 pass, got %d", len(recorded.passSizes))
+		t.Fatalf("expected 0 completed passes, got %d", len(recorded.passSizes))
 	}
 
 	if recorded.written != 4 {
@@ -604,15 +516,5 @@ func TestOverwriteSyncFailure(t *testing.T) {
 		t.Fatalf("expected 8 unread bytes, got %d", random.Len())
 	}
 
-	expectedData := []byte("1234")
-
-	actualData, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read test file: %v", err)
-	}
-
-	if !bytes.Equal(actualData, expectedData) {
-		t.Fatalf("expected file contents %q, got %q",
-			expectedData, actualData)
-	}
+	assertFileContents(t, path, []byte("1234"))
 }
